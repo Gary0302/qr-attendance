@@ -11,6 +11,10 @@
  *   2. 再手動執行一次 setupSheets()，補上標題與格式
  */
 
+// 版本標記：直接用瀏覽器打開 /exec 就看得到，用來確認部署的是哪一版程式碼。
+// 每次貼新的 Code.gs 進編輯器後，記得重新「部署新版本」，這個字串才會跟著更新。
+var CODE_VERSION = '20260911-idonly-rotate-nonce';
+
 var CONFIG = {
   SHEET_NAME: '名冊',        // 主資料表
   LOG_SHEET_NAME: '紀錄',    // 逐筆稽核紀錄
@@ -80,6 +84,9 @@ function doGet(e) {
     status: 'success',
     message: 'QR 點名系統 API 運作中',
     studentName: '',
+    version: CODE_VERSION,
+    rotateEnabled: !!getRotateSecret(),
+    rosterCount: rosterCount(),
     time: nowString()
   });
 }
@@ -563,6 +570,14 @@ function clearSessionMarks() {
 
 
 /* ============================ 共用 ============================ */
+
+/** 名冊人數，只回數字不回內容，方便確認試算表接對了。 */
+function rosterCount() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET_NAME);
+    return sheet ? Math.max(0, sheet.getLastRow() - 1) : 0;
+  } catch (e) { return -1; }
+}
 
 function jsonOut(obj) {
   return ContentService
