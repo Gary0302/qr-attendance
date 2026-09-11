@@ -48,6 +48,25 @@
   button.primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
   button:hover{ filter:brightness(1.06); }
 
+  .rotate{ margin-top:12px; font-size:12.5px; color:var(--muted); }
+  .rotate .bar, .p-rotate .bar{
+    height:5px; border-radius:999px; background:var(--line); overflow:hidden; margin-bottom:6px;
+  }
+  .rotate .bar i, .p-rotate .bar i{
+    display:block; height:100%; background:var(--accent); border-radius:999px;
+    width:100%; transition:width .25s linear;
+  }
+  .static-note{
+    margin-top:12px; font-size:12.5px; line-height:1.5; color:#9a3412;
+    background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:9px 11px;
+  }
+  @media (prefers-color-scheme: dark){
+    .static-note{ color:#fed7aa; background:#2b1c10; border-color:#7c2d12; }
+  }
+  .p-rotate{ width:min(520px,70vw); font-size:clamp(13px,1.5vw,20px); color:#555; text-align:center; }
+  .p-rotate .bar{ height:8px; background:#e5e5e5; }
+  .p-rotate .bar i{ background:#111; }
+
   /* 投影全螢幕模式 */
   #project{
     position:fixed; inset:0; background:#fff; color:#111; z-index:50;
@@ -96,14 +115,28 @@
       </div>
 
       <label>
+        <span class="lbl">輪替密語（防截圖轉傳）</span>
+        <input type="password" id="secret" placeholder="與 setRotateSecret() 設定的同一串" autocomplete="off">
+        <span class="hint">
+          填了之後 QR 每 30 秒換一次，舊的碼後端會拒絕，學生截圖傳給別人也沒用。<br>
+          密語只存在這台電腦的瀏覽器，不會進 QR、不會上傳、學生看不到。
+        </span>
+      </label>
+
+      <label>
         <span class="lbl">通行碼 token（選填）</span>
         <input type="text" id="token" placeholder="與 Code.gs 的 CONFIG.TOKEN 相同">
-        <span class="hint">只是防止隨手亂打，不是安全機制。</span>
+        <span class="hint">固定不變的碼，只能防隨手亂打。已用輪替密語就不需要這個。</span>
       </label>
     </div>
 
     <div class="panel qrbox">
       <div id="qr"></div>
+      <div id="rotate" class="rotate" hidden>
+        <div class="bar"><i id="bar"></i></div>
+        <span id="countdown">30 秒後更換</span>
+      </div>
+      <div id="static" class="static-note">固定網址模式 —— 學生可截圖轉傳給沒到的同學</div>
       <div class="url" id="url"></div>
       <div class="btns">
         <button id="copy">複製網址</button>
@@ -116,6 +149,10 @@
 <div id="project">
   <h2 id="pTitle">課堂點名</h2>
   <div id="projectQr"></div>
+  <div id="pRotate" class="p-rotate" hidden>
+    <div class="bar"><i id="pBar"></i></div>
+    <span id="pCountdown"></span>
+  </div>
   <p id="pSub">請用手機相機掃描，輸入學號與姓名完成簽到</p>
   <button class="close" id="exit">關閉（Esc）</button>
 </div>
@@ -127,12 +164,18 @@
   'use strict';
   var CFG = window.APP_CONFIG || {};
   var $ = function(id){ return document.getElementById(id); };
+
   var LABEL = { attendance:'課堂點名', classBonus:'課堂加分', lectureBonus:'講座加分' };
   var SUB = {
     attendance:'請用手機相機掃描，輸入學號與姓名完成簽到',
     classBonus:'請用手機相機掃描，登記本次課堂加分',
     lectureBonus:'請用手機相機掃描，登記本次講座加分'
   };
+
+  // 必須與 Code.gs 的 CONFIG.ROTATE_PERIOD_SEC / ROTATE_CODE_LEN 相同
+  var PERIOD = 30;
+  var CODE_LEN = 10;
+  var SECRET_KEY = 'qr-teacher.secret';
 
   // 推導學生端網址：拿掉檔名與查詢字串。
   // Vercel 的 cleanUrls 會把 /qr.html 轉成 /qr，兩種都要能處理。
@@ -144,61 +187,136 @@
     if (!/\/$/.test(u.pathname)) u.pathname += '/';
     return u.toString();
   }
-  var base = siteBase();
-  $('site').value = base;
+  $('site').value = siteBase();
 
-  var qrMain = null, qrBig = null;
+  // 密語只留在這台電腦，絕不進網址、絕不上傳
+  try { $('secret').value = localStorage.getItem(SECRET_KEY) || ''; } catch (e) {}
+  function rememberSecret(){
+    try {
+      var v = $('secret').value.trim();
+      if (v) localStorage.setItem(SECRET_KEY, v); else localStorage.removeItem(SECRET_KEY);
+    } catch (e) {}
+  }
 
-  function buildUrl(){
-    var site = $('site').value.trim() || base;
+  /* ---------- 輪替碼 ---------- */
+
+  function hmacHex(secret, msg){
+    var enc = new TextEncoder();
+    return crypto.subtle
+      .importKey('raw', enc.encode(secret), { name:'HMAC', hash:'SHA-256' }, false, ['sign'])
+      .then(function(key){ return crypto.subtle.sign('HMAC', key, enc.encode(msg)); })
+      .then(function(sig){
+        var out = '', b = new Uint8Array(sig);
+        for (var i = 0; i < b.length; i++) {
+          var h = b[i].toString(16);
+          out += (h.length === 1 ? '0' : '') + h;
+        }
+        return out;
+      });
+  }
+
+  function slotNow(){ return Math.floor(Date.now() / 1000 / PERIOD); }
+  function secsLeft(){ return PERIOD - (Date.now() / 1000) % PERIOD; }
+
+  /* ---------- 組網址 ---------- */
+
+  function buildUrl(slot){
+    var site = $('site').value.trim() || siteBase();
     var mode = $('mode').value;
     var u;
     try { u = new URL(site, location.href); }
-    catch (e) { return site; }
+    catch (e) { return Promise.resolve(site); }
+
     u.searchParams.set('mode', mode);
 
-    var s = $('session').value.trim();
-    if (s) u.searchParams.set('session', s);
+    var sess = $('session').value.trim();
+    if (sess) u.searchParams.set('session', sess);
 
-    var p = parseInt($('points').value, 10);
-    if (mode !== 'attendance' && p > 1) u.searchParams.set('points', String(Math.min(p, 10)));
+    var pts = parseInt($('points').value, 10);
+    if (mode !== 'attendance' && pts > 1) u.searchParams.set('points', String(Math.min(pts, 10)));
 
-    var t = $('token').value.trim();
-    if (t) u.searchParams.set('token', t);
+    var tok = $('token').value.trim();
+    if (tok) u.searchParams.set('token', tok);
 
-    return u.toString();
-  }
+    var secret = $('secret').value.trim();
+    if (!secret) return Promise.resolve(u.toString());
 
-  function render(){
-    var url = buildUrl();
-    $('url').textContent = url;
-    $('qr').innerHTML = '';
-    qrMain = new QRCode($('qr'), { text:url, width:240, height:240, correctLevel:QRCode.CorrectLevel.M });
-
-    var mode = $('mode').value;
-    $('pTitle').textContent = LABEL[mode];
-    $('pSub').textContent = SUB[mode];
-    if ($('project').classList.contains('on')) renderBig(url);
-  }
-
-  function renderBig(url){
-    var size = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.52);
-    $('projectQr').innerHTML = '';
-    qrBig = new QRCode($('projectQr'), {
-      text:url, width:size, height:size, correctLevel:QRCode.CorrectLevel.M
+    return hmacHex(secret, mode + '|' + sess + '|' + slot).then(function(hex){
+      u.searchParams.set('s', String(slot));
+      u.searchParams.set('c', hex.slice(0, CODE_LEN));
+      return u.toString();
     });
   }
 
-  ['mode','site','session','points','token'].forEach(function(id){
-    $(id).addEventListener('input', render);
-    $(id).addEventListener('change', render);
+  /* ---------- 繪製 ---------- */
+
+  function draw(el, url, size){
+    el.innerHTML = '';
+    new QRCode(el, { text:url, width:size, height:size, correctLevel:QRCode.CorrectLevel.M });
+  }
+  function projecting(){ return $('project').classList.contains('on'); }
+  function bigSize(){ return Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.46); }
+
+  var lastUrl = '', lastSlot = -1, busy = false;
+
+  function render(force){
+    if (busy) return;
+    busy = true;
+    var slot = slotNow();
+    buildUrl(slot).then(function(url){
+      if (url !== lastUrl || force) {
+        lastUrl = url; lastSlot = slot;
+        $('url').textContent = url;
+        draw($('qr'), url, 240);
+        if (projecting()) draw($('projectQr'), url, bigSize());
+      }
+      var mode = $('mode').value;
+      $('pTitle').textContent = LABEL[mode];
+      $('pSub').textContent = SUB[mode];
+      paintRotateState();
+    }).catch(function(err){
+      $('url').textContent = '產生失敗：' + (err && err.message || err);
+    }).then(function(){ busy = false; });
+  }
+
+  function paintRotateState(){
+    var on = !!$('secret').value.trim();
+    $('rotate').hidden = !on;
+    $('static').hidden = on;
+    $('pRotate').hidden = !on;
+  }
+
+  function tick(){
+    if (!$('secret').value.trim()) return;
+    if (slotNow() !== lastSlot) { render(); return; }
+
+    var left = secsLeft();
+    var pct = (left / PERIOD) * 100;
+    var txt = Math.ceil(left) + ' 秒後更換';
+    $('bar').style.width = pct + '%';
+    $('countdown').textContent = txt;
+    if (projecting()) {
+      $('pBar').style.width = pct + '%';
+      $('pCountdown').textContent = txt;
+    }
+  }
+
+  /* ---------- 事件 ---------- */
+
+  ['mode','site','session','points','token','secret'].forEach(function(id){
+    $(id).addEventListener('input', function(){
+      if (id === 'secret') rememberSecret();
+      render(true);
+    });
+    $(id).addEventListener('change', function(){ render(true); });
   });
 
   $('copy').addEventListener('click', function(){
-    var btn = this, text = buildUrl();
-    navigator.clipboard.writeText(text).then(function(){
-      btn.textContent = '已複製 ✓';
-      setTimeout(function(){ btn.textContent = '複製網址'; }, 1600);
+    var btn = this;
+    var note = $('secret').value.trim() ? '已複製（此網址 30 秒後失效）' : '已複製 ✓';
+    navigator.clipboard.writeText(lastUrl).then(function(){
+      btn.textContent = note;
+      setTimeout(function(){ btn.textContent = '複製網址'; }, 2000);
     }).catch(function(){
       btn.textContent = '請手動複製下方網址';
       setTimeout(function(){ btn.textContent = '複製網址'; }, 2000);
@@ -207,7 +325,8 @@
 
   function openProject(){
     $('project').classList.add('on');
-    renderBig(buildUrl());
+    draw($('projectQr'), lastUrl, bigSize());
+    paintRotateState();
     if (document.documentElement.requestFullscreen) {
       document.documentElement.requestFullscreen().catch(function(){});
     }
@@ -220,11 +339,10 @@
   $('full').addEventListener('click', openProject);
   $('exit').addEventListener('click', closeProject);
   document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeProject(); });
-  window.addEventListener('resize', function(){
-    if ($('project').classList.contains('on')) renderBig(buildUrl());
-  });
+  window.addEventListener('resize', function(){ if (projecting()) draw($('projectQr'), lastUrl, bigSize()); });
 
-  render();
+  render(true);
+  setInterval(tick, 250);
 })();
 </script>
 </body>

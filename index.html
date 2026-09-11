@@ -181,7 +181,22 @@
   if (!apiReady) { $('setup').hidden = false; elBtn.disabled = true; }
 
   /* ---------- 本地記憶 ---------- */
-  var STORE_KEY = 'qr-checkin.student';
+  var STORE_KEY  = 'qr-checkin.student';
+  var DEVICE_KEY = 'qr-checkin.device';
+
+  // 裝置代碼：用來防止同一支手機幫好幾個人簽到。
+  // 只是隨機字串，不含任何個人資訊，也不會離開這支手機以外的地方（除了送給後端比對）。
+  function deviceId(){
+    try {
+      var id = localStorage.getItem(DEVICE_KEY);
+      if (!id) {
+        id = (crypto && crypto.randomUUID) ? crypto.randomUUID()
+           : String(Date.now()) + '-' + Math.random().toString(36).slice(2, 10);
+        localStorage.setItem(DEVICE_KEY, id);
+      }
+      return id;
+    } catch (e) { return ''; }   // 隱私模式取不到就算了，後端會放行
+  }
   function loadCache(){
     try {
       var raw = localStorage.getItem(STORE_KEY);
@@ -247,7 +262,11 @@
       // 由 QR Code 網址帶入的選用參數
       session: qs.get('session') || '',
       points:  qs.get('points')  || '',
-      token:   qs.get('token')   || ''
+      token:   qs.get('token')   || '',
+      // 輪替式 QR 的時間格與簽章碼，由老師螢幕上的 QR 帶入
+      s:   qs.get('s') || '',
+      c:   qs.get('c') || '',
+      dev: deviceId()
     };
 
     // 使用 text/plain 送出 JSON：這是 CORS「簡單請求」，

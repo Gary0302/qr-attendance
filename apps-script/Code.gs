@@ -25,6 +25,19 @@ var CONFIG = {
   DEFAULT_POINTS: 1,   // 未指定 points 時，一次加幾分
   MAX_POINTS: 10,      // points 參數上限，避免有人竄改網址狂加分
 
+  // ── 輪替式 QR（防止截圖轉傳）────────────────────────────
+  // 教師端每 ROTATE_PERIOD_SEC 秒重新產生一次 QR，網址帶簽章碼。
+  // 密鑰存在「指令碼屬性」而非這份原始碼，因為 repo 是公開的。
+  // 啟用：在編輯器執行 setRotateSecret('你自己想的一串密語')
+  // 停用：執行 clearRotateSecret()
+  ROTATE_PERIOD_SEC: 30,   // 每 30 秒換一次碼
+  ROTATE_SLOP_SLOTS: 1,    // 容許誤差 ±1 格 → 一個碼實際可用約 30~90 秒
+  ROTATE_CODE_LEN: 10,     // 簽章碼長度（hex 字元數）
+
+  // ── 一機一人（防止用自己手機幫朋友簽到）──────────────────
+  // 同一台裝置在同一場次最多可登記幾個不同學號。0 = 不限制。
+  MAX_STUDENTS_PER_DEVICE: 1,
+
   // 只允許名單上的學號簽到；false 則未在名單者自動新增資料列並標記。
   ROSTER_ONLY: false,
 
@@ -45,7 +58,7 @@ var COL = {
 };
 
 var HEADERS = ['序號', '學號', '姓名', '年級', '電子信箱', '選上否', '出席時間', '課堂加分', '講座加分'];
-var LOG_HEADERS = ['送出時間', '模式', '學號', '送出姓名', '名冊姓名', '場次', '分數', '結果', '備註'];
+var LOG_HEADERS = ['送出時間', '模式', '學號', '送出姓名', '名冊姓名', '場次', '分數', '結果', '備註', '裝置'];
 
 var MODE_TO_COL = {
   classBonus: COL.CLASS_BONUS,
@@ -152,7 +165,10 @@ function parseRequest(e) {
     studentId: studentId,
     studentName: studentName,
     session: String(raw.session || '').trim(),
-    points: points
+    points: points,
+    slot: String(raw.s || '').trim(),          // QR 產生時的時間格
+    code: String(raw.c || '').trim(),          // 該時間格的簽章碼
+    deviceId: String(raw.dev || '').trim().slice(0, 40)
   };
 }
 
@@ -160,6 +176,18 @@ function parseRequest(e) {
 /* ============================ 主要邏輯 ============================ */
 
 function handle(req) {
+  // 輪替碼驗證：設了密鑰就強制檢查，舊的截圖會被擋下。
+  var rot = verifyRotation(req);
+  if (!rot.ok) {
+    return { status: 'error', message: rot.message, studentName: req.studentName, note: rot.note };
+  }
+
+  // 一機一人：同一台手機不能在同一場次幫別人簽到。
+  var dev = checkDevice(req);
+  if (!dev.ok) {
+    return { status: 'error', message: dev.message, studentName: req.studentName, note: dev.note };
+  }
+
   var sheet = getSheet(CONFIG.SHEET_NAME, HEADERS);
 
   // 同一場次不重複計分：QR 網址有帶 session 時才啟用。
@@ -219,6 +247,7 @@ function handle(req) {
     cell.setValue(now);
     cell.setNumberFormat(CONFIG.TIME_FORMAT);
     markSession(req);
+    markDevice(req);
     return {
       status: 'success',
       message: '已記錄簽到時間 ' + formatTime(now) + '。',
@@ -233,6 +262,7 @@ function handle(req) {
   var total = current + req.points;
   cellB.setValue(total);
   markSession(req);
+  markDevice(req);
 
   return {
     status: 'success',
@@ -297,8 +327,161 @@ function writeLog(req, result) {
     req.session || '',
     req.mode === 'attendance' ? '' : (req.points || ''),
     result.status === 'success' ? '成功' : '失敗',
-    result.note || (result.status === 'success' ? '' : result.message) || ''
+    result.note || (result.status === 'success' ? '' : result.message) || '',
+    req.deviceId ? req.deviceId.slice(0, 8) : ''
   ]);
+}
+
+
+/* ======================= 輪替式 QR 驗證 ======================= */
+/*
+ * 目的：學生把 QR 截圖傳給沒來的同學也沒用，因為碼只活 30~90 秒。
+ *
+ * 教師端 qr.html 每 30 秒重算一次：
+ *   slot = floor(現在秒數 / 30)
+ *   code = HMAC-SHA256(密鑰, "mode|session|slot") 取前 10 個 hex 字元
+ * 並把 &s=<slot>&c=<code> 放進 QR 的網址。
+ *
+ * 後端重算同樣的值比對，並確認 slot 和伺服器當下時間相差不超過 ±1 格。
+ * 密鑰只存在「指令碼屬性」，不在這份公開的原始碼裡。
+ */
+
+var ROTATE_SECRET_KEY = 'ROTATE_SECRET';
+
+function getRotateSecret() {
+  return PropertiesService.getScriptProperties().getProperty(ROTATE_SECRET_KEY) || '';
+}
+
+/** 在編輯器執行一次來啟用輪替式 QR。教師端 qr.html 要輸入同一串密語。 */
+function setRotateSecret(secret) {
+  secret = String(secret || '').trim();
+  if (secret.length < 8) {
+    throw new Error('密語太短，請用至少 8 個字元。');
+  }
+  PropertiesService.getScriptProperties().setProperty(ROTATE_SECRET_KEY, secret);
+  Logger.log('輪替式 QR 已啟用。請在 qr.html 輸入同一串密語。');
+}
+
+/** 停用輪替式 QR（回到固定網址）。 */
+function clearRotateSecret() {
+  PropertiesService.getScriptProperties().deleteProperty(ROTATE_SECRET_KEY);
+  Logger.log('輪替式 QR 已停用。');
+}
+
+/** HMAC-SHA256 轉小寫 hex。注意 Apps Script 的位元組是有號的，要補回 256。 */
+function hmacHex(secret, message) {
+  var raw = Utilities.computeHmacSha256Signature(message, secret);
+  var out = '';
+  for (var i = 0; i < raw.length; i++) {
+    var b = raw[i] < 0 ? raw[i] + 256 : raw[i];
+    var h = b.toString(16);
+    out += (h.length === 1 ? '0' : '') + h;
+  }
+  return out;
+}
+
+function expectedCode(secret, mode, session, slot) {
+  return hmacHex(secret, mode + '|' + session + '|' + slot).slice(0, CONFIG.ROTATE_CODE_LEN);
+}
+
+function currentSlot() {
+  return Math.floor(Date.now() / 1000 / CONFIG.ROTATE_PERIOD_SEC);
+}
+
+/** 定時比較，避免用字串比較的耗時差異洩漏資訊。 */
+function safeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function verifyRotation(req) {
+  var secret = getRotateSecret();
+  if (!secret) return { ok: true };   // 未啟用就不檢查
+
+  if (!req.slot || !req.code) {
+    return {
+      ok: false,
+      message: '這個 QR Code 沒有有效的簽到碼，請掃描老師螢幕上現在顯示的 QR Code。',
+      note: '缺少輪替碼'
+    };
+  }
+
+  var slot = parseInt(req.slot, 10);
+  if (!slot || slot < 0) {
+    return { ok: false, message: '簽到碼格式錯誤，請重新掃描。', note: '輪替碼格式錯誤' };
+  }
+
+  var drift = Math.abs(currentSlot() - slot);
+  if (drift > CONFIG.ROTATE_SLOP_SLOTS) {
+    var secs = drift * CONFIG.ROTATE_PERIOD_SEC;
+    return {
+      ok: false,
+      message: '這個 QR Code 已經過期了（約 ' + secs + ' 秒前的碼）。'
+             + '請重新掃描老師螢幕上現在顯示的 QR Code。',
+      note: '輪替碼過期 ' + secs + ' 秒'
+    };
+  }
+
+  if (!safeEqual(req.code, expectedCode(secret, req.mode, req.session, String(slot)))) {
+    return {
+      ok: false,
+      message: '簽到碼不正確，請重新掃描老師螢幕上的 QR Code。',
+      note: '輪替碼驗證失敗'
+    };
+  }
+
+  return { ok: true };
+}
+
+
+/* ======================= 一機一人 ======================= */
+/*
+ * 防止學生用自己的手機連續幫好幾個朋友簽到。
+ * 這是「增加麻煩」而不是「絕對防堵」——清掉瀏覽器資料或用無痕視窗就會拿到新的裝置代碼。
+ * 真正的價值是留下軌跡：紀錄表的「裝置」欄會顯示同一台手機送了哪些學號。
+ */
+
+function deviceKey(req) {
+  return 'dev:' + req.session + ':' + req.deviceId;
+}
+
+function checkDevice(req) {
+  var max = CONFIG.MAX_STUDENTS_PER_DEVICE;
+  if (!max || max < 1) return { ok: true };
+  if (!req.session || !req.deviceId) return { ok: true };  // 沒場次或沒裝置代碼就不管
+
+  var seen = PropertiesService.getScriptProperties().getProperty(deviceKey(req));
+  if (!seen) return { ok: true };
+
+  var ids = seen.split(',');
+  if (ids.indexOf(req.studentId) > -1) return { ok: true };   // 同一人重複送，放行
+  if (ids.length < max) return { ok: true };
+
+  return {
+    ok: false,
+    message: max === 1
+      ? '這台裝置這堂課已經幫「' + ids[0] + '」簽到過了，不能再幫其他人簽到。'
+      : '這台裝置這堂課已達簽到人數上限（' + max + ' 人）。',
+    note: '一機多人：已有 ' + seen
+  };
+}
+
+function markDevice(req) {
+  var max = CONFIG.MAX_STUDENTS_PER_DEVICE;
+  if (!max || max < 1) return;
+  if (!req.session || !req.deviceId) return;
+
+  var props = PropertiesService.getScriptProperties();
+  var key = deviceKey(req);
+  var seen = props.getProperty(key);
+  var ids = seen ? seen.split(',') : [];
+  if (ids.indexOf(req.studentId) > -1) return;
+  ids.push(req.studentId);
+  props.setProperty(key, ids.join(','));
 }
 
 
@@ -330,9 +513,9 @@ function clearSessionMarks() {
   var all = props.getProperties();
   var n = 0;
   for (var k in all) {
-    if (k.indexOf('done:') === 0) { props.deleteProperty(k); n++; }
+    if (k.indexOf('done:') === 0 || k.indexOf('dev:') === 0) { props.deleteProperty(k); n++; }
   }
-  Logger.log('已清除 ' + n + ' 筆場次紀錄');
+  Logger.log('已清除 ' + n + ' 筆場次／裝置紀錄');
 }
 
 
