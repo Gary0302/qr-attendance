@@ -13,7 +13,7 @@
 
 // 版本標記：直接用瀏覽器打開 /exec 就看得到，用來確認部署的是哪一版程式碼。
 // 每次貼新的 Code.gs 進編輯器後，記得重新「部署新版本」，這個字串才會跟著更新。
-var CODE_VERSION = '20260911-idonly-rotate-nonce-normalize-menu';
+var CODE_VERSION = '20260911-idonly-rotate-nonce-normalize-menu2';
 
 var CONFIG = {
   SHEET_NAME: '名冊',        // 主資料表
@@ -528,11 +528,13 @@ function verifyRotation(req) {
   var drift = Math.abs(currentSlot() - slot);
   if (drift > CONFIG.ROTATE_SLOP_SLOTS) {
     var secs = drift * CONFIG.ROTATE_PERIOD_SEC;
+    // 差距太誇張代表是亂填的時間格，講「幾秒前」只會出現無意義的天文數字。
+    var tooFar = drift > 120;   // 超過一小時
     return {
       ok: false,
-      message: '這個 QR Code 已經過期了（約 ' + secs + ' 秒前的碼）。'
+      message: (tooFar ? '這個簽到碼無效。' : '這個 QR Code 已經過期了（約 ' + secs + ' 秒前的碼）。')
              + '請重新掃描老師螢幕上現在顯示的 QR Code。',
-      note: '輪替碼過期 ' + secs + ' 秒'
+      note: tooFar ? '輪替碼時間格異常' : '輪替碼過期 ' + secs + ' 秒'
     };
   }
 
