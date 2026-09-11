@@ -13,7 +13,7 @@
 
 // 版本標記：直接用瀏覽器打開 /exec 就看得到，用來確認部署的是哪一版程式碼。
 // 每次貼新的 Code.gs 進編輯器後，記得重新「部署新版本」，這個字串才會跟著更新。
-var CODE_VERSION = '20260911-idonly-rotate-nonce-normalize';
+var CODE_VERSION = '20260911-idonly-rotate-nonce-normalize-menu';
 
 var CONFIG = {
   SHEET_NAME: '名冊',        // 主資料表
@@ -678,6 +678,92 @@ function formatTime(date) {
 }
 
 function nowString() { return formatTime(new Date()); }
+
+
+/* ======================= 試算表選單 ======================= */
+/*
+ * 開啟試算表時會多一個「點名系統」選單，維護動作用點的就好，
+ * 不必在編輯器裡改程式碼——密語也不會留在原始碼裡。
+ */
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('點名系統')
+    .addItem('① 初始化工作表', 'setupSheets')
+    .addSeparator()
+    .addItem('② 設定輪替密語（防截圖轉傳）', 'promptRotateSecret')
+    .addItem('停用輪替密語', 'confirmClearRotateSecret')
+    .addSeparator()
+    .addItem('清除場次／裝置紀錄', 'confirmClearSessionMarks')
+    .addItem('系統狀態', 'showStatus')
+    .addToUi();
+}
+
+/** 跳出視窗輸入密語，輸入的內容不會存進原始碼。 */
+function promptRotateSecret() {
+  var ui = SpreadsheetApp.getUi();
+  var current = getRotateSecret();
+
+  var res = ui.prompt(
+    '設定輪替密語',
+    (current ? '目前已啟用（密語不顯示）。輸入新的密語會覆蓋舊的。\n\n' : '')
+      + '請輸入至少 8 個字元的密語。\n'
+      + '設定後要在教師頁 /qr 的「輪替密語」欄填一模一樣的字串。',
+    ui.ButtonSet.OK_CANCEL);
+
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+
+  var secret = res.getResponseText().trim();
+  if (secret.length < 8) {
+    ui.alert('密語太短', '至少要 8 個字元，沒有變更。', ui.ButtonSet.OK);
+    return;
+  }
+
+  setRotateSecret(secret);
+  ui.alert('已啟用輪替式 QR',
+    '接下來請到教師頁 /qr，在「輪替密語」欄輸入同一串字。\n\n'
+    + 'QR 會每 ' + CONFIG.ROTATE_PERIOD_SEC + ' 秒換一次，'
+    + '學生截圖轉傳給沒到的同學約 '
+    + (CONFIG.ROTATE_PERIOD_SEC * (CONFIG.ROTATE_SLOP_SLOTS + 1)) + ' 秒後就會失效。',
+    ui.ButtonSet.OK);
+}
+
+function confirmClearRotateSecret() {
+  var ui = SpreadsheetApp.getUi();
+  if (!getRotateSecret()) { ui.alert('目前本來就沒有啟用輪替式 QR。'); return; }
+  var yes = ui.alert('停用輪替式 QR',
+    '停用後 QR 會變回固定網址，學生截圖轉傳就能簽到。確定要停用嗎？',
+    ui.ButtonSet.YES_NO);
+  if (yes === ui.Button.YES) {
+    clearRotateSecret();
+    ui.alert('已停用。記得也把 /qr 的密語欄清空。');
+  }
+}
+
+function confirmClearSessionMarks() {
+  var ui = SpreadsheetApp.getUi();
+  var yes = ui.alert('清除場次／裝置紀錄',
+    '會清掉「哪個學號在哪一場登記過」和「哪台裝置幫誰簽過」的紀錄。\n\n'
+    + '試算表的分數與出席時間不受影響。\n'
+    + '想重複使用同一個場次代碼時才需要執行。確定嗎？',
+    ui.ButtonSet.YES_NO);
+  if (yes === ui.Button.YES) {
+    clearSessionMarks();
+    ui.alert('已清除。');
+  }
+}
+
+function showStatus() {
+  var ui = SpreadsheetApp.getUi();
+  ui.alert('系統狀態',
+    '程式版本：' + CODE_VERSION + '\n'
+    + '名冊人數：' + rosterCount() + ' 人\n'
+    + '輪替式 QR：' + (getRotateSecret() ? '已啟用（每 ' + CONFIG.ROTATE_PERIOD_SEC + ' 秒換一次）' : '未啟用') + '\n'
+    + '一機一人：' + (CONFIG.MAX_STUDENTS_PER_DEVICE
+        ? '同場次每台裝置最多 ' + CONFIG.MAX_STUDENTS_PER_DEVICE + ' 人' : '未限制') + '\n'
+    + '只收名單內學號：' + (CONFIG.ROSTER_ONLY ? '是' : '否（未在名單者會標記）'),
+    ui.ButtonSet.OK);
+}
 
 
 /* ============================ 安裝 / 維護 ============================ */
