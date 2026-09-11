@@ -4,7 +4,7 @@
  */
 window.APP_CONFIG = {
   // 【必填】Google Apps Script 部署後取得的「網頁應用程式」網址，結尾是 /exec
-  API_URL: 'https://script.google.com/macros/s/AKfycbz_Pf5hiG2a8qfwcHpvN0Erie1AsnHn-bS7zg4pgM54cTACRHN2FlZfkkgmcgrPxjw/exec',
+  API_URL: 'https://script.google.com/macros/s/AKfycby7j5y3o5WgOHKA1Gj-IF5yjWmpMOqzvi5PqATuZdWgczPXW5GvlW3k11aD5rni3Ao/exec',
 
   // 【選填】前端網頁的正式網址（給 QR 產生器用）。留空會自動使用目前網址。
   SITE_URL: '',
