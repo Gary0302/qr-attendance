@@ -118,7 +118,7 @@
   <form id="form" novalidate autocomplete="on">
     <label>
       <span class="lbl">學號</span>
-      <input type="text" id="studentId" name="studentId" placeholder="例如 B147610001"
+      <input type="text" id="studentId" name="studentId" placeholder="例如 B123456789"
              autocapitalize="characters" autocorrect="off" spellcheck="false"
              enterkeyhint="send" maxlength="20" required>
     </label>
@@ -285,7 +285,7 @@
     var id = normalizeId(elId.value);
 
     if (!id) { status('err', '請輸入學號', '學號為必填，不接受匿名簽到。'); elId.focus(); return; }
-    if (id.length < 4) { status('err', '學號看起來不完整', '請輸入完整學號，例如 B147610001。'); elId.focus(); return; }
+    if (id.length < 4) { status('err', '學號看起來不完整', '請輸入完整學號，例如 B123456789。'); elId.focus(); return; }
 
     elId.value = id;
     submit(id);
