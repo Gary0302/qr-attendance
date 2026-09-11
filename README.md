@@ -1,5 +1,15 @@
 # QR Code 點名與加分系統
 
+**正式網址**
+
+| 用途 | 網址 |
+| --- | --- |
+| 學生簽到頁 | <https://qr-attendance-pied.vercel.app/> |
+| 教師 QR 產生器 | <https://qr-attendance-pied.vercel.app/qr> |
+| 原始碼 | <https://github.com/Gary0302/qr-attendance> |
+
+推到 GitHub `main` 會自動重新部署。
+
 用一張投影在螢幕上的 QR Code，讓全班同學用自己的手機完成點名與加分登記，
 資料直接寫進 Google 試算表。實作依據 [`spec.md`](spec.md)。
 
@@ -73,8 +83,11 @@ window.APP_CONFIG = {
 
 這是純靜態網站，沒有建置步驟。
 
-- **Vercel**：`npx vercel deploy --prod`（或在網頁介面匯入 repo）
-- **GitHub Pages**：把檔案推到 repo → Settings → Pages → 選分支根目錄
+已部署在 Vercel 並連上 GitHub repo，`git push` 到 `main` 就會自動上線。
+要手動部署：`vercel deploy --prod --yes`
+
+注意 `vercel.json` 開了 `cleanUrls`，所以教師頁的網址是 `/qr` 而不是 `/qr.html`。
+`apps-script/`、`spec.md`、`README.md` 已由 `.vercelignore` 排除，不會被部署。
 
 ### 5. 產生 QR Code
 

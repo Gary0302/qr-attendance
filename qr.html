@@ -134,7 +134,17 @@
     lectureBonus:'請用手機相機掃描，登記本次講座加分'
   };
 
-  var base = CFG.SITE_URL || location.href.replace(/qr\.html.*$/, '').replace(/[?#].*$/, '');
+  // 推導學生端網址：拿掉檔名與查詢字串。
+  // Vercel 的 cleanUrls 會把 /qr.html 轉成 /qr，兩種都要能處理。
+  function siteBase() {
+    if (CFG.SITE_URL) return CFG.SITE_URL;
+    var u = new URL(location.href);
+    u.search = ''; u.hash = '';
+    u.pathname = u.pathname.replace(/\/qr(\.html)?$/, '/');
+    if (!/\/$/.test(u.pathname)) u.pathname += '/';
+    return u.toString();
+  }
+  var base = siteBase();
   $('site').value = base;
 
   var qrMain = null, qrBig = null;
