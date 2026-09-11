@@ -1,0 +1,12 @@
+# 學生個資：姓名與電子信箱，絕對不要進版控
+name.txt
+roster.csv
+roster-*.csv
+*.private.*
+
+# Vercel
+.vercel
+
+# 系統
+.DS_Store
+node_modules/

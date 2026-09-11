@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>QR Code 產生器（教師用）</title>
+<style>
+  :root{
+    --bg:#f4f5f8; --card:#fff; --ink:#16181d; --muted:#6b7280; --line:#e4e6eb;
+    --field:#fbfbfd; --accent:#4f46e5;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0e1014; --card:#171a20; --ink:#f2f3f5; --muted:#9aa1ad; --line:#2a2e37; --field:#1f232b; --accent:#818cf8; }
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; background:var(--bg); color:var(--ink); padding:28px 16px 60px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;
+  }
+  .wrap{ max-width:900px; margin:0 auto; }
+  h1{ font-size:24px; margin:0 0 6px; letter-spacing:-.01em; }
+  .lead{ color:var(--muted); margin:0 0 24px; font-size:14.5px; line-height:1.6; }
+  .grid{ display:grid; grid-template-columns:minmax(280px,1fr) minmax(260px,340px); gap:22px; align-items:start; }
+  @media (max-width:720px){ .grid{ grid-template-columns:1fr; } }
+  .panel{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:22px; }
+  label{ display:block; margin-bottom:15px; }
+  .lbl{ display:block; font-size:13px; font-weight:600; margin-bottom:6px; }
+  .hint{ display:block; font-size:12px; color:var(--muted); margin-top:5px; line-height:1.5; }
+  input,select{
+    width:100%; font:inherit; font-size:15px; padding:10px 12px; border-radius:10px;
+    border:1px solid var(--line); background:var(--field); color:var(--ink);
+  }
+  input:focus,select:focus{ outline:2px solid var(--accent); outline-offset:1px; }
+  .row{ display:flex; gap:12px; } .row>*{ flex:1; }
+  .qrbox{ text-align:center; }
+  #qr{ display:inline-flex; padding:16px; background:#fff; border-radius:14px; border:1px solid var(--line); }
+  #qr img,#qr canvas{ display:block; }
+  .url{
+    margin-top:14px; font-size:12px; color:var(--muted); word-break:break-all;
+    background:var(--field); border:1px solid var(--line); border-radius:10px; padding:10px; text-align:left; line-height:1.5;
+  }
+  .btns{ display:flex; gap:10px; margin-top:14px; }
+  button{
+    flex:1; font:inherit; font-size:14.5px; font-weight:600; padding:11px; border-radius:10px;
+    border:1px solid var(--line); background:var(--field); color:var(--ink); cursor:pointer;
+  }
+  button.primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:hover{ filter:brightness(1.06); }
+
+  /* 投影全螢幕模式 */
+  #project{
+    position:fixed; inset:0; background:#fff; color:#111; z-index:50;
+    display:none; flex-direction:column; align-items:center; justify-content:center; gap:24px; padding:4vh;
+  }
+  #project.on{ display:flex; }
+  #project h2{ font-size:clamp(28px,5vw,64px); margin:0; text-align:center; }
+  #project p{ font-size:clamp(15px,2vw,26px); color:#555; margin:0; text-align:center; }
+  #projectQr{ padding:20px; background:#fff; border-radius:20px; box-shadow:0 10px 40px rgba(0,0,0,.12); }
+  #project .close{ position:fixed; top:16px; right:16px; flex:none; padding:10px 18px; background:#eee; color:#111; border-color:#ddd; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>QR Code 產生器</h1>
+  <p class="lead">選好模式後投影右邊的 QR Code，全班同步掃描即可簽到。網址與參數都在下方顯示，可直接複製。</p>
+
+  <div class="grid">
+    <div class="panel">
+      <label>
+        <span class="lbl">簽到模式</span>
+        <select id="mode">
+          <option value="attendance">點名簽到（attendance）</option>
+          <option value="classBonus">課堂加分（classBonus）</option>
+          <option value="lectureBonus">講座加分（lectureBonus）</option>
+        </select>
+      </label>
+
+      <label>
+        <span class="lbl">前端網頁網址</span>
+        <input type="text" id="site" placeholder="https://your-site.vercel.app/">
+        <span class="hint">學生掃描後會開啟的網頁。預設帶入目前這頁的位置。</span>
+      </label>
+
+      <div class="row">
+        <label>
+          <span class="lbl">場次代碼 session</span>
+          <input type="text" id="session" placeholder="例如 0911-第三節">
+          <span class="hint">填了就能防止同一人重複加分。</span>
+        </label>
+        <label>
+          <span class="lbl">分數 points</span>
+          <input type="number" id="points" min="1" max="10" placeholder="1">
+          <span class="hint">加分模式專用，預設 1 分。</span>
+        </label>
+      </div>
+
+      <label>
+        <span class="lbl">通行碼 token（選填）</span>
+        <input type="text" id="token" placeholder="與 Code.gs 的 CONFIG.TOKEN 相同">
+        <span class="hint">只是防止隨手亂打，不是安全機制。</span>
+      </label>
+    </div>
+
+    <div class="panel qrbox">
+      <div id="qr"></div>
+      <div class="url" id="url"></div>
+      <div class="btns">
+        <button id="copy">複製網址</button>
+        <button id="full" class="primary">投影全螢幕</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="project">
+  <h2 id="pTitle">課堂點名</h2>
+  <div id="projectQr"></div>
+  <p id="pSub">請用手機相機掃描，輸入學號與姓名完成簽到</p>
+  <button class="close" id="exit">關閉（Esc）</button>
+</div>
+
+<script src="config.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(function(){
+  'use strict';
+  var CFG = window.APP_CONFIG || {};
+  var $ = function(id){ return document.getElementById(id); };
+  var LABEL = { attendance:'課堂點名', classBonus:'課堂加分', lectureBonus:'講座加分' };
+  var SUB = {
+    attendance:'請用手機相機掃描，輸入學號與姓名完成簽到',
+    classBonus:'請用手機相機掃描，登記本次課堂加分',
+    lectureBonus:'請用手機相機掃描，登記本次講座加分'
+  };
+
+  var base = CFG.SITE_URL || location.href.replace(/qr\.html.*$/, '').replace(/[?#].*$/, '');
+  $('site').value = base;
+
+  var qrMain = null, qrBig = null;
+
+  function buildUrl(){
+    var site = $('site').value.trim() || base;
+    var mode = $('mode').value;
+    var u;
+    try { u = new URL(site, location.href); }
+    catch (e) { return site; }
+    u.searchParams.set('mode', mode);
+
+    var s = $('session').value.trim();
+    if (s) u.searchParams.set('session', s);
+
+    var p = parseInt($('points').value, 10);
+    if (mode !== 'attendance' && p > 1) u.searchParams.set('points', String(Math.min(p, 10)));
+
+    var t = $('token').value.trim();
+    if (t) u.searchParams.set('token', t);
+
+    return u.toString();
+  }
+
+  function render(){
+    var url = buildUrl();
+    $('url').textContent = url;
+    $('qr').innerHTML = '';
+    qrMain = new QRCode($('qr'), { text:url, width:240, height:240, correctLevel:QRCode.CorrectLevel.M });
+
+    var mode = $('mode').value;
+    $('pTitle').textContent = LABEL[mode];
+    $('pSub').textContent = SUB[mode];
+    if ($('project').classList.contains('on')) renderBig(url);
+  }
+
+  function renderBig(url){
+    var size = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.52);
+    $('projectQr').innerHTML = '';
+    qrBig = new QRCode($('projectQr'), {
+      text:url, width:size, height:size, correctLevel:QRCode.CorrectLevel.M
+    });
+  }
+
+  ['mode','site','session','points','token'].forEach(function(id){
+    $(id).addEventListener('input', render);
+    $(id).addEventListener('change', render);
+  });
+
+  $('copy').addEventListener('click', function(){
+    var btn = this, text = buildUrl();
+    navigator.clipboard.writeText(text).then(function(){
+      btn.textContent = '已複製 ✓';
+      setTimeout(function(){ btn.textContent = '複製網址'; }, 1600);
+    }).catch(function(){
+      btn.textContent = '請手動複製下方網址';
+      setTimeout(function(){ btn.textContent = '複製網址'; }, 2000);
+    });
+  });
+
+  function openProject(){
+    $('project').classList.add('on');
+    renderBig(buildUrl());
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(function(){});
+    }
+  }
+  function closeProject(){
+    $('project').classList.remove('on');
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(function(){});
+  }
+
+  $('full').addEventListener('click', openProject);
+  $('exit').addEventListener('click', closeProject);
+  document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeProject(); });
+  window.addEventListener('resize', function(){
+    if ($('project').classList.contains('on')) renderBig(buildUrl());
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="zh-Hant" data-mode="attendance">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#4f46e5">
+<meta name="robots" content="noindex">
+<title>課堂簽到</title>
+<style>
+  :root{
+    --accent:#4f46e5; --accent-soft:#eef2ff; --accent-ink:#3730a3;
+    --bg:#f4f5f8; --card:#ffffff; --ink:#16181d; --muted:#6b7280;
+    --line:#e4e6eb; --field:#fbfbfd;
+    --ok:#047857; --ok-bg:#ecfdf5; --err:#b91c1c; --err-bg:#fef2f2;
+    --radius:16px;
+  }
+  html[data-mode="classBonus"]{ --accent:#059669; --accent-soft:#ecfdf5; --accent-ink:#065f46; }
+  html[data-mode="lectureBonus"]{ --accent:#c2410c; --accent-soft:#fff7ed; --accent-ink:#9a3412; }
+
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0e1014; --card:#171a20; --ink:#f2f3f5; --muted:#9aa1ad;
+      --line:#2a2e37; --field:#1f232b; --accent-soft:#1e2333; --accent-ink:#c7d2fe;
+      --ok:#6ee7b7; --ok-bg:#0d2a21; --err:#fca5a5; --err-bg:#2c1414;
+    }
+    html[data-mode="classBonus"]{ --accent:#10b981; --accent-soft:#0e2a22; --accent-ink:#a7f3d0; }
+    html[data-mode="lectureBonus"]{ --accent:#f97316; --accent-soft:#2b1c10; --accent-ink:#fed7aa; }
+  }
+
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; min-height:100dvh; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;
+    display:flex; align-items:center; justify-content:center;
+    padding:24px 16px calc(24px + env(safe-area-inset-bottom));
+    -webkit-text-size-adjust:100%;
+  }
+  .card{
+    width:100%; max-width:440px; background:var(--card); border:1px solid var(--line);
+    border-radius:var(--radius); padding:28px 24px 22px;
+    box-shadow:0 1px 2px rgba(16,18,24,.04), 0 12px 32px -12px rgba(16,18,24,.18);
+  }
+  .badge{
+    display:inline-block; font-size:12.5px; font-weight:700; letter-spacing:.04em;
+    color:var(--accent-ink); background:var(--accent-soft);
+    padding:5px 11px; border-radius:999px;
+  }
+  h1{ font-size:26px; line-height:1.25; margin:14px 0 6px; letter-spacing:-.01em; }
+  .sub{ margin:0 0 22px; color:var(--muted); font-size:14.5px; line-height:1.55; }
+  .course{ margin:2px 0 0; color:var(--muted); font-size:13px; }
+
+  label{ display:block; margin-bottom:16px; }
+  .lbl{ display:block; font-size:13.5px; font-weight:600; margin-bottom:7px; }
+  input[type=text]{
+    width:100%; font-size:17px; /* >=16px 避免 iOS 自動放大 */
+    padding:13px 14px; border-radius:11px; border:1px solid var(--line);
+    background:var(--field); color:var(--ink); font-family:inherit;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  input[type=text]:focus{
+    outline:none; border-color:var(--accent);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  input[type=text]:disabled{ opacity:.55; }
+  #studentId{ letter-spacing:.06em; font-variant-numeric:tabular-nums; }
+
+  .check{ display:flex; align-items:center; gap:9px; font-size:14px; color:var(--muted); margin-bottom:20px; }
+  .check input{ width:17px; height:17px; accent-color:var(--accent); margin:0; }
+
+  button{
+    width:100%; font-family:inherit; font-size:17px; font-weight:700; color:#fff;
+    background:var(--accent); border:0; border-radius:11px; padding:15px;
+    cursor:pointer; transition:filter .15s, transform .06s;
+  }
+  button:hover:not(:disabled){ filter:brightness(1.07); }
+  button:active:not(:disabled){ transform:translateY(1px); }
+  button:disabled{ opacity:.6; cursor:default; }
+
+  .status{ margin-top:16px; font-size:14.5px; line-height:1.6; border-radius:11px; padding:13px 15px; display:none; }
+  .status.show{ display:block; }
+  .status.loading{ background:var(--accent-soft); color:var(--accent-ink); }
+  .status.ok{ background:var(--ok-bg); color:var(--ok); }
+  .status.err{ background:var(--err-bg); color:var(--err); }
+  .status strong{ font-size:16px; display:block; margin-bottom:2px; }
+
+  .spinner{
+    display:inline-block; width:13px; height:13px; margin-right:7px; vertical-align:-1px;
+    border:2px solid currentColor; border-right-color:transparent; border-radius:50%;
+    animation:spin .7s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce){ .spinner{ animation-duration:2s; } }
+
+  footer{ margin-top:20px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px; line-height:1.6; }
+  .setup{ background:var(--err-bg); color:var(--err); border-radius:11px; padding:14px; font-size:14px; line-height:1.6; margin-bottom:18px; }
+</style>
+</head>
+<body>
+<main class="card">
+  <header>
+    <span class="badge" id="modeBadge">點名簽到</span>
+    <h1 id="title">課堂點名</h1>
+    <p class="sub" id="subtitle">請輸入學號與姓名完成簽到。</p>
+    <p class="course" id="course" hidden></p>
+  </header>
+
+  <div class="setup" id="setup" hidden>
+    尚未設定後端 API 網址，請先在 <code>config.js</code> 填入 Apps Script 的 <code>/exec</code> 部署網址。
+  </div>
+
+  <form id="form" novalidate autocomplete="on">
+    <label>
+      <span class="lbl">學號</span>
+      <input type="text" id="studentId" name="studentId" placeholder="例如 B11209001"
+             autocapitalize="characters" autocorrect="off" spellcheck="false"
+             enterkeyhint="next" maxlength="20" required>
+    </label>
+    <label>
+      <span class="lbl">姓名</span>
+      <input type="text" id="studentName" name="studentName" placeholder="請輸入本名"
+             autocomplete="name" autocorrect="off" spellcheck="false"
+             enterkeyhint="send" maxlength="30" required>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="remember" checked>
+      <span>在這支手機記住學號與姓名</span>
+    </label>
+    <button type="submit" id="submitBtn">送出簽到</button>
+  </form>
+
+  <div class="status" id="status" role="status" aria-live="polite"></div>
+
+  <footer id="footer">送出後請確認畫面出現成功訊息，再關閉頁面。</footer>
+</main>
+
+<script src="config.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  var MODES = {
+    attendance: {
+      badge:'點名簽到', title:'課堂點名',
+      subtitle:'請輸入學號與姓名完成簽到，系統會記錄伺服器端的簽到時間。',
+      action:'送出簽到', pending:'簽到中…', ok:'簽到成功'
+    },
+    classBonus: {
+      badge:'課堂加分', title:'課堂加分登記',
+      subtitle:'請輸入學號與姓名登記本次課堂加分。',
+      action:'登記加分', pending:'登記中…', ok:'加分成功'
+    },
+    lectureBonus: {
+      badge:'講座加分', title:'講座加分登記',
+      subtitle:'請輸入學號與姓名登記本次講座加分。',
+      action:'登記加分', pending:'登記中…', ok:'加分成功'
+    }
+  };
+
+  var CFG   = window.APP_CONFIG || {};
+  var qs    = new URLSearchParams(location.search);
+  var mode  = qs.get('mode');
+  if (!MODES[mode]) mode = 'attendance';
+  var M = MODES[mode];
+
+  var $ = function(id){ return document.getElementById(id); };
+  var elForm = $('form'), elId = $('studentId'), elName = $('studentName'),
+      elRemember = $('remember'), elBtn = $('submitBtn'), elStatus = $('status');
+
+  /* ---------- 依模式套用外觀與文案 ---------- */
+  document.documentElement.setAttribute('data-mode', mode);
+  $('modeBadge').textContent = M.badge;
+  $('title').textContent     = M.title;
+  $('subtitle').textContent  = M.subtitle;
+  elBtn.textContent          = M.action;
+  document.title             = M.title;
+
+  if (CFG.COURSE_NAME) { $('course').textContent = CFG.COURSE_NAME; $('course').hidden = false; }
+
+  var apiReady = !!CFG.API_URL && CFG.API_URL.indexOf('script.google.com') > -1
+                 && CFG.API_URL.indexOf('請換成') === -1;
+  if (!apiReady) { $('setup').hidden = false; elBtn.disabled = true; }
+
+  /* ---------- 本地記憶 ---------- */
+  var STORE_KEY = 'qr-checkin.student';
+  function loadCache(){
+    try {
+      var raw = localStorage.getItem(STORE_KEY);
+      if (!raw) return;
+      var c = JSON.parse(raw);
+      if (c && c.studentId)   elId.value   = c.studentId;
+      if (c && c.studentName) elName.value = c.studentName;
+    } catch (e) { /* 隱私模式或已停用儲存，直接忽略 */ }
+  }
+  function saveCache(id, name){
+    try {
+      if (elRemember.checked) {
+        localStorage.setItem(STORE_KEY, JSON.stringify({ studentId:id, studentName:name }));
+      } else {
+        localStorage.removeItem(STORE_KEY);
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+  loadCache();
+  if (elId.value && !elName.value) elName.focus();
+
+  /* ---------- 狀態訊息 ---------- */
+  function status(kind, title, detail){
+    elStatus.className = 'status show ' + kind;
+    var head = kind === 'loading' ? '<span class="spinner"></span>' + esc(title)
+                                  : '<strong>' + esc(title) + '</strong>';
+    elStatus.innerHTML = head + (detail ? esc(detail) : '');
+  }
+  function clearStatus(){ elStatus.className = 'status'; elStatus.innerHTML = ''; }
+  function esc(s){
+    return String(s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  /* ---------- 送出 ---------- */
+  var busy = false;
+
+  elForm.addEventListener('submit', function(ev){
+    ev.preventDefault();
+    if (busy || !apiReady) return;
+
+    var id   = elId.value.trim().toUpperCase().replace(/\s+/g, '');
+    var name = elName.value.trim().replace(/\s+/g, ' ');
+
+    if (!id)   { status('err', '請輸入學號', '學號為必填，不接受匿名簽到。'); elId.focus();   return; }
+    if (!name) { status('err', '請輸入姓名', '姓名為必填，不接受匿名簽到。'); elName.focus(); return; }
+    if (name.length < 2) { status('err','姓名看起來不完整','請輸入完整本名。'); elName.focus(); return; }
+
+    elId.value = id; elName.value = name;
+    submit(id, name);
+  });
+
+  function submit(id, name){
+    busy = true;
+    elBtn.disabled = true; elId.disabled = true; elName.disabled = true;
+    status('loading', M.pending);
+
+    var payload = {
+      mode: mode,
+      studentId: id,
+      studentName: name,
+      // 由 QR Code 網址帶入的選用參數
+      session: qs.get('session') || '',
+      points:  qs.get('points')  || '',
+      token:   qs.get('token')   || ''
+    };
+
+    // 使用 text/plain 送出 JSON：這是 CORS「簡單請求」，
+    // 不會觸發 preflight（Apps Script 無法回應 OPTIONS）。
+    var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timer = setTimeout(function(){ if (ctrl) ctrl.abort(); }, 20000);
+
+    fetch(CFG.API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      signal: ctrl ? ctrl.signal : undefined
+    })
+    .then(function(res){
+      if (!res.ok) throw new Error('伺服器回應 ' + res.status);
+      return res.text();
+    })
+    .then(function(text){
+      var data;
+      try { data = JSON.parse(text); }
+      catch (e) { throw new Error('伺服器回傳格式錯誤，請通知老師。'); }
+
+      if (data.status === 'success') {
+        saveCache(id, name);
+        status('ok', M.ok, (data.studentName ? data.studentName + '，' : '') + (data.message || '已完成紀錄。'));
+        done();
+      } else {
+        status('err', '無法完成', data.message || '請再試一次，或舉手告知老師。');
+        reset();
+      }
+    })
+    .catch(function(err){
+      var msg = (err && err.name === 'AbortError')
+        ? '連線逾時，請確認網路後再送出一次。'
+        : (err.message || '網路連線失敗，請確認網路後再試一次。');
+      status('err', '送出失敗', msg);
+      reset();
+    })
+    .finally(function(){ clearTimeout(timer); });
+  }
+
+  function reset(){
+    busy = false;
+    elBtn.disabled = false; elId.disabled = false; elName.disabled = false;
+  }
+
+  // 成功後短暫鎖住按鈕，避免手殘連按造成重複加分
+  function done(){
+    elBtn.textContent = '已完成';
+    setTimeout(function(){
+      busy = false;
+      elId.disabled = false; elName.disabled = false;
+      elBtn.disabled = false; elBtn.textContent = M.action + '（重新送出）';
+    }, 4000);
+  }
+
+  elId.addEventListener('input', function(){ if (elStatus.classList.contains('err')) clearStatus(); });
+  elName.addEventListener('input', function(){ if (elStatus.classList.contains('err')) clearStatus(); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+# 學生個資：不要部署到公開網站
+name.txt
+roster.csv
+roster-*.csv
+
+# 不需要上線的檔案
+apps-script/
+spec.md
+README.md
+.DS_Store
