@@ -96,14 +96,32 @@ function doPost(e) {
   var lock = LockService.getScriptLock();
   // 全班同時掃碼時，用鎖確保一次只有一個請求在讀寫試算表，避免覆蓋彼此的分數。
   try {
-    lock.waitLock(28000);
+    lock.waitLock(25000);
   } catch (err) {
-    return jsonOut({ status: 'error', message: '系統忙碌中，請稍候幾秒再送出一次。', studentName: '' });
+    return jsonOut({
+      status: 'error',
+      studentName: '',
+      message: '現在同時簽到的人太多，請等 10 秒再送出一次（重送不會重複計分）。'
+    });
   }
 
   try {
+    // 逾時重送保護：同一筆送出只會計分一次。
+    var prior = recallNonce(req);
+    if (prior) {
+      lock.releaseLock();
+      return jsonOut(prior);
+    }
+
     var result = handle(req);
     writeLog(req, result);
+    if (result.status === 'success') {
+      rememberNonce(req, {
+        status: 'success',
+        message: result.message,
+        studentName: result.studentName || ''
+      });
+    }
     return jsonOut({
       status: result.status,
       message: result.message,
@@ -152,8 +170,8 @@ function parseRequest(e) {
   var studentName = String(raw.studentName || '').trim().replace(/[\s　]+/g, ' ');
 
   if (!studentId) throw new Error('缺少學號，無法簽到。');
-  if (!studentName) throw new Error('缺少姓名，無法簽到。');
   if (!CONFIG.STUDENT_ID_PATTERN.test(studentId)) throw new Error('學號格式不正確：' + studentId);
+  // 姓名為選填：學號是唯一識別，姓名一律以名冊為準。
   if (studentName.length > 30) throw new Error('姓名過長。');
 
   var points = parseInt(raw.points, 10);
@@ -168,7 +186,8 @@ function parseRequest(e) {
     points: points,
     slot: String(raw.s || '').trim(),          // QR 產生時的時間格
     code: String(raw.c || '').trim(),          // 該時間格的簽章碼
-    deviceId: String(raw.dev || '').trim().slice(0, 40)
+    deviceId: String(raw.dev || '').trim().slice(0, 40),
+    nonce: String(raw.nonce || '').trim().slice(0, 60)
   };
 }
 
@@ -215,11 +234,12 @@ function handle(req) {
       canonicalName = req.studentName;
     }
   } else {
-    if (CONFIG.ROSTER_ONLY) {
+    // 名單上查不到：沒有姓名可寫就無法建立有意義的資料列，直接擋下。
+    if (CONFIG.ROSTER_ONLY || !req.studentName) {
       return {
         status: 'error',
-        message: '查無此學號（' + req.studentId + '），請確認是否輸入錯誤，或舉手告知老師。',
-        studentName: req.studentName,
+        message: '名單上查不到學號「' + req.studentId + '」，請確認是否輸入錯誤，或舉手告知老師。',
+        studentName: '',
         note: '不在名冊'
       };
     }
@@ -237,15 +257,15 @@ function handle(req) {
   // 姓名以名冊為準，避免有人打錯字或改掉別人的姓名；不一致時記在紀錄表供老師核對。
   // 比對時忽略全形/半形空白：學務系統會把兩字姓名補成「王　明」，
   // 但學生自己通常只會打「王明」。
-  if (!created && squash(canonicalName) !== squash(req.studentName)) {
+  if (!created && req.studentName && squash(canonicalName) !== squash(req.studentName)) {
     note = '姓名不符（名冊：' + canonicalName + '）';
   }
 
   if (req.mode === 'attendance') {
     var now = new Date();
-    var cell = sheet.getRange(row, COL.ATTENDANCE);
-    cell.setValue(now);
-    cell.setNumberFormat(CONFIG.TIME_FORMAT);
+    // 欄位格式由 setupSheets() 一次設定好整欄，這裡不必重設，
+    // 每個請求少打一次試算表 API（全班同時掃碼時差很多）。
+    sheet.getRange(row, COL.ATTENDANCE).setValue(now);
     markSession(req);
     markDevice(req);
     return {
@@ -435,6 +455,29 @@ function verifyRotation(req) {
   }
 
   return { ok: true };
+}
+
+
+/* ======================= 逾時重送保護 ======================= */
+/*
+ * 全班同時掃碼時，排在後面的請求可能等超過前端的逾時時間。
+ * 學生看到逾時會再按一次——如果沒有這層保護，加分就會變兩次。
+ *
+ * 前端對同一筆簽到（模式＋學號＋場次）在 3 分鐘內會沿用同一個 nonce，
+ * 後端認得就直接回上次的結果，不再動試算表。
+ * 放在 CacheService（6 小時後自動過期），不佔用指令碼屬性的配額。
+ */
+
+function recallNonce(req) {
+  if (!req.nonce) return null;
+  var hit = CacheService.getScriptCache().get('nonce:' + req.nonce);
+  if (!hit) return null;
+  try { return JSON.parse(hit); } catch (e) { return null; }
+}
+
+function rememberNonce(req, payload) {
+  if (!req.nonce) return;
+  CacheService.getScriptCache().put('nonce:' + req.nonce, JSON.stringify(payload), 21600);
 }
 
 

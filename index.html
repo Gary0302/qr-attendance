@@ -100,7 +100,7 @@
   <header>
     <span class="badge" id="modeBadge">點名簽到</span>
     <h1 id="title">課堂點名</h1>
-    <p class="sub" id="subtitle">請輸入學號與姓名完成簽到。</p>
+    <p class="sub" id="subtitle">請輸入學號完成簽到。</p>
     <p class="course" id="course" hidden></p>
   </header>
 
@@ -113,17 +113,11 @@
       <span class="lbl">學號</span>
       <input type="text" id="studentId" name="studentId" placeholder="例如 B11209001"
              autocapitalize="characters" autocorrect="off" spellcheck="false"
-             enterkeyhint="next" maxlength="20" required>
-    </label>
-    <label>
-      <span class="lbl">姓名</span>
-      <input type="text" id="studentName" name="studentName" placeholder="請輸入本名"
-             autocomplete="name" autocorrect="off" spellcheck="false"
-             enterkeyhint="send" maxlength="30" required>
+             enterkeyhint="send" maxlength="20" required>
     </label>
     <label class="check">
       <input type="checkbox" id="remember" checked>
-      <span>在這支手機記住學號與姓名</span>
+      <span>在這支手機記住學號</span>
     </label>
     <button type="submit" id="submitBtn">送出簽到</button>
   </form>
@@ -141,17 +135,17 @@
   var MODES = {
     attendance: {
       badge:'點名簽到', title:'課堂點名',
-      subtitle:'請輸入學號與姓名完成簽到，系統會記錄伺服器端的簽到時間。',
+      subtitle:'請輸入學號完成簽到，系統會記錄伺服器端的簽到時間。',
       action:'送出簽到', pending:'簽到中…', ok:'簽到成功'
     },
     classBonus: {
       badge:'課堂加分', title:'課堂加分登記',
-      subtitle:'請輸入學號與姓名登記本次課堂加分。',
+      subtitle:'請輸入學號登記本次課堂加分。',
       action:'登記加分', pending:'登記中…', ok:'加分成功'
     },
     lectureBonus: {
       badge:'講座加分', title:'講座加分登記',
-      subtitle:'請輸入學號與姓名登記本次講座加分。',
+      subtitle:'請輸入學號登記本次講座加分。',
       action:'登記加分', pending:'登記中…', ok:'加分成功'
     }
   };
@@ -163,7 +157,7 @@
   var M = MODES[mode];
 
   var $ = function(id){ return document.getElementById(id); };
-  var elForm = $('form'), elId = $('studentId'), elName = $('studentName'),
+  var elForm = $('form'), elId = $('studentId'),
       elRemember = $('remember'), elBtn = $('submitBtn'), elStatus = $('status');
 
   /* ---------- 依模式套用外觀與文案 ---------- */
@@ -183,6 +177,22 @@
   /* ---------- 本地記憶 ---------- */
   var STORE_KEY  = 'qr-checkin.student';
   var DEVICE_KEY = 'qr-checkin.device';
+  var NONCE_KEY  = 'qr-checkin.nonce';
+
+  // 逾時重送保護：同一筆簽到（模式＋學號＋場次）在 3 分鐘內沿用同一組 nonce，
+  // 後端認得就不會重複計分。換學號或換場次會拿到新的一組。
+  function submissionNonce(sig){
+    var now = Date.now();
+    try {
+      var prev = JSON.parse(localStorage.getItem(NONCE_KEY) || 'null');
+      if (prev && prev.sig === sig && (now - prev.ts) < 180000) return prev.nonce;
+    } catch (e) {}
+    var nonce = ((crypto && crypto.randomUUID) ? crypto.randomUUID()
+                 : String(now) + '-' + Math.random().toString(36).slice(2, 10));
+    try { localStorage.setItem(NONCE_KEY, JSON.stringify({ sig:sig, nonce:nonce, ts:now })); }
+    catch (e) {}
+    return nonce;
+  }
 
   // 裝置代碼：用來防止同一支手機幫好幾個人簽到。
   // 只是隨機字串，不含任何個人資訊，也不會離開這支手機以外的地方（除了送給後端比對）。
@@ -202,21 +212,19 @@
       var raw = localStorage.getItem(STORE_KEY);
       if (!raw) return;
       var c = JSON.parse(raw);
-      if (c && c.studentId)   elId.value   = c.studentId;
-      if (c && c.studentName) elName.value = c.studentName;
+      if (c && c.studentId) elId.value = c.studentId;
     } catch (e) { /* 隱私模式或已停用儲存，直接忽略 */ }
   }
-  function saveCache(id, name){
+  function saveCache(id){
     try {
       if (elRemember.checked) {
-        localStorage.setItem(STORE_KEY, JSON.stringify({ studentId:id, studentName:name }));
+        localStorage.setItem(STORE_KEY, JSON.stringify({ studentId:id }));
       } else {
         localStorage.removeItem(STORE_KEY);
       }
     } catch (e) { /* 忽略 */ }
   }
   loadCache();
-  if (elId.value && !elName.value) elName.focus();
 
   /* ---------- 狀態訊息 ---------- */
   function status(kind, title, detail){
@@ -239,26 +247,23 @@
     ev.preventDefault();
     if (busy || !apiReady) return;
 
-    var id   = elId.value.trim().toUpperCase().replace(/\s+/g, '');
-    var name = elName.value.trim().replace(/\s+/g, ' ');
+    var id = elId.value.trim().toUpperCase().replace(/[\s　-]+/g, '');
 
-    if (!id)   { status('err', '請輸入學號', '學號為必填，不接受匿名簽到。'); elId.focus();   return; }
-    if (!name) { status('err', '請輸入姓名', '姓名為必填，不接受匿名簽到。'); elName.focus(); return; }
-    if (name.length < 2) { status('err','姓名看起來不完整','請輸入完整本名。'); elName.focus(); return; }
+    if (!id) { status('err', '請輸入學號', '學號為必填，不接受匿名簽到。'); elId.focus(); return; }
+    if (id.length < 4) { status('err', '學號看起來不完整', '請輸入完整學號，例如 B147610001。'); elId.focus(); return; }
 
-    elId.value = id; elName.value = name;
-    submit(id, name);
+    elId.value = id;
+    submit(id);
   });
 
-  function submit(id, name){
+  function submit(id){
     busy = true;
-    elBtn.disabled = true; elId.disabled = true; elName.disabled = true;
+    elBtn.disabled = true; elId.disabled = true;
     status('loading', M.pending);
 
     var payload = {
       mode: mode,
       studentId: id,
-      studentName: name,
       // 由 QR Code 網址帶入的選用參數
       session: qs.get('session') || '',
       points:  qs.get('points')  || '',
@@ -266,13 +271,16 @@
       // 輪替式 QR 的時間格與簽章碼，由老師螢幕上的 QR 帶入
       s:   qs.get('s') || '',
       c:   qs.get('c') || '',
-      dev: deviceId()
+      dev: deviceId(),
+      nonce: submissionNonce(mode + '|' + id + '|' + (qs.get('session') || ''))
     };
 
     // 使用 text/plain 送出 JSON：這是 CORS「簡單請求」，
     // 不會觸發 preflight（Apps Script 無法回應 OPTIONS）。
     var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    var timer = setTimeout(function(){ if (ctrl) ctrl.abort(); }, 20000);
+    // 45 秒 > 後端等鎖的 25 秒：讓後端有機會回真正的結果，
+    // 而不是讓學生看到「不知道到底簽到了沒」的逾時。
+    var timer = setTimeout(function(){ if (ctrl) ctrl.abort(); }, 45000);
 
     fetch(CFG.API_URL, {
       method: 'POST',
@@ -291,7 +299,7 @@
       catch (e) { throw new Error('伺服器回傳格式錯誤，請通知老師。'); }
 
       if (data.status === 'success') {
-        saveCache(id, name);
+        saveCache(id);
         status('ok', M.ok, (data.studentName ? data.studentName + '，' : '') + (data.message || '已完成紀錄。'));
         done();
       } else {
@@ -301,7 +309,7 @@
     })
     .catch(function(err){
       var msg = (err && err.name === 'AbortError')
-        ? '連線逾時，請確認網路後再送出一次。'
+        ? '等太久了，請再送出一次（重送不會重複計分）。'
         : (err.message || '網路連線失敗，請確認網路後再試一次。');
       status('err', '送出失敗', msg);
       reset();
@@ -311,7 +319,7 @@
 
   function reset(){
     busy = false;
-    elBtn.disabled = false; elId.disabled = false; elName.disabled = false;
+    elBtn.disabled = false; elId.disabled = false;
   }
 
   // 成功後短暫鎖住按鈕，避免手殘連按造成重複加分
@@ -319,13 +327,12 @@
     elBtn.textContent = '已完成';
     setTimeout(function(){
       busy = false;
-      elId.disabled = false; elName.disabled = false;
+      elId.disabled = false;
       elBtn.disabled = false; elBtn.textContent = M.action + '（重新送出）';
     }, 4000);
   }
 
   elId.addEventListener('input', function(){ if (elStatus.classList.contains('err')) clearStatus(); });
-  elName.addEventListener('input', function(){ if (elStatus.classList.contains('err')) clearStatus(); });
 })();
 </script>
 </body>
