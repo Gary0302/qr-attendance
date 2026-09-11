@@ -91,6 +91,13 @@
   @keyframes spin{ to{ transform:rotate(360deg); } }
   @media (prefers-reduced-motion: reduce){ .spinner{ animation-duration:2s; } }
 
+  .suggest{
+    display:block; width:100%; margin-top:11px; padding:11px;
+    font-size:15px; font-weight:600; font-family:inherit;
+    color:#fff; background:var(--accent); border:0; border-radius:9px; cursor:pointer;
+  }
+  .suggest:hover{ filter:brightness(1.07); }
+
   footer{ margin-top:20px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:12.5px; line-height:1.6; }
   .setup{ background:var(--err-bg); color:var(--err); border-radius:11px; padding:14px; font-size:14px; line-height:1.6; margin-bottom:18px; }
 </style>
@@ -111,7 +118,7 @@
   <form id="form" novalidate autocomplete="on">
     <label>
       <span class="lbl">學號</span>
-      <input type="text" id="studentId" name="studentId" placeholder="例如 B11209001"
+      <input type="text" id="studentId" name="studentId" placeholder="例如 B147610001"
              autocapitalize="characters" autocorrect="off" spellcheck="false"
              enterkeyhint="send" maxlength="20" required>
     </label>
@@ -175,6 +182,19 @@
   if (!apiReady) { $('setup').hidden = false; elBtn.disabled = true; }
 
   /* ---------- 本地記憶 ---------- */
+  // 與後端 Code.gs 的 normalizeId() 同一套規則：
+  // 全形轉半形、貼信箱只取 @ 前、去掉空白與分隔符、轉大寫。
+  function normalizeId(raw){
+    var s = String(raw == null ? '' : raw);
+    s = s.replace(/[\uFF01-\uFF5E]/g, function(ch){
+      return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0);
+    });
+    s = s.replace(/\u3000/g, ' ');
+    var at = s.indexOf('@');
+    if (at > 0) s = s.substring(0, at);
+    return s.replace(/[\s\-_.]/g, '').toUpperCase();
+  }
+
   var STORE_KEY  = 'qr-checkin.student';
   var DEVICE_KEY = 'qr-checkin.device';
   var NONCE_KEY  = 'qr-checkin.nonce';
@@ -234,6 +254,21 @@
     elStatus.innerHTML = head + (detail ? esc(detail) : '');
   }
   function clearStatus(){ elStatus.className = 'status'; elStatus.innerHTML = ''; }
+
+  // 後端猜到可能的正確學號時，給一個按鈕直接改掉並重送，
+  // 但不自動套用——簽到成別人是比多按一下更糟的事。
+  function offerSuggestion(id){
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'suggest';
+    btn.textContent = '改用 ' + id + ' 送出';
+    btn.addEventListener('click', function(){
+      elId.value = id;
+      clearStatus();
+      submit(id);
+    });
+    elStatus.appendChild(btn);
+  }
   function esc(s){
     return String(s).replace(/[&<>"']/g, function(c){
       return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
@@ -247,7 +282,7 @@
     ev.preventDefault();
     if (busy || !apiReady) return;
 
-    var id = elId.value.trim().toUpperCase().replace(/[\s　-]+/g, '');
+    var id = normalizeId(elId.value);
 
     if (!id) { status('err', '請輸入學號', '學號為必填，不接受匿名簽到。'); elId.focus(); return; }
     if (id.length < 4) { status('err', '學號看起來不完整', '請輸入完整學號，例如 B147610001。'); elId.focus(); return; }
@@ -304,6 +339,7 @@
         done();
       } else {
         status('err', '無法完成', data.message || '請再試一次，或舉手告知老師。');
+        if (data.suggestion) offerSuggestion(data.suggestion);
         reset();
       }
     })
@@ -332,7 +368,19 @@
     }, 4000);
   }
 
-  elId.addEventListener('input', function(){ if (elStatus.classList.contains('err')) clearStatus(); });
+  // 邊打邊清乾淨，但要保住游標位置，不然刪字會跳掉
+  elId.addEventListener('input', function(){
+    var raw = this.value;
+    var clean = normalizeId(raw);
+    if (clean !== raw) {
+      var caret = this.selectionStart;
+      var dropped = caret - normalizeId(raw.substring(0, caret)).length;
+      this.value = clean;
+      var pos = Math.max(0, caret - dropped);
+      try { this.setSelectionRange(pos, pos); } catch (e) {}
+    }
+    if (elStatus.classList.contains('err')) clearStatus();
+  });
 })();
 </script>
 </body>

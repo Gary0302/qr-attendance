@@ -13,7 +13,7 @@
 
 // 版本標記：直接用瀏覽器打開 /exec 就看得到，用來確認部署的是哪一版程式碼。
 // 每次貼新的 Code.gs 進編輯器後，記得重新「部署新版本」，這個字串才會跟著更新。
-var CODE_VERSION = '20260911-idonly-rotate-nonce';
+var CODE_VERSION = '20260911-idonly-rotate-nonce-normalize';
 
 var CONFIG = {
   SHEET_NAME: '名冊',        // 主資料表
@@ -45,7 +45,7 @@ var CONFIG = {
   // 只允許名單上的學號簽到；false 則未在名單者自動新增資料列並標記。
   ROSTER_ONLY: false,
 
-  STUDENT_ID_PATTERN: /^[A-Za-z0-9._-]{2,20}$/
+  STUDENT_ID_PATTERN: /^[A-Z0-9]{2,20}$/   // 已經過 normalizeId，只會剩英數
 };
 
 /* 欄位對應：A~F 來自學務系統名單，G~I 為本系統寫入 */
@@ -132,7 +132,8 @@ function doPost(e) {
     return jsonOut({
       status: result.status,
       message: result.message,
-      studentName: result.studentName || ''
+      studentName: result.studentName || '',
+      suggestion: result.suggestion || ''
     });
   } catch (err) {
     var msg = '伺服器錯誤：' + String(err && err.message || err);
@@ -173,11 +174,13 @@ function parseRequest(e) {
     throw new Error('這個 QR Code 已失效，請掃描老師目前投影的 QR Code。');
   }
 
-  var studentId = String(raw.studentId || '').trim().toUpperCase().replace(/\s+/g, '');
+  var studentId = normalizeId(raw.studentId);
   var studentName = String(raw.studentName || '').trim().replace(/[\s　]+/g, ' ');
 
   if (!studentId) throw new Error('缺少學號，無法簽到。');
-  if (!CONFIG.STUDENT_ID_PATTERN.test(studentId)) throw new Error('學號格式不正確：' + studentId);
+  if (!CONFIG.STUDENT_ID_PATTERN.test(studentId)) {
+    throw new Error('學號只能是英文字母與數字，請重新輸入（你輸入的是「' + studentId + '」）。');
+  }
   // 姓名為選填：學號是唯一識別，姓名一律以名冊為準。
   if (studentName.length > 30) throw new Error('姓名過長。');
 
@@ -243,11 +246,15 @@ function handle(req) {
   } else {
     // 名單上查不到：沒有姓名可寫就無法建立有意義的資料列，直接擋下。
     if (CONFIG.ROSTER_ONLY || !req.studentName) {
+      var guess = suggestId(sheet, req.studentId);
       return {
         status: 'error',
-        message: '名單上查不到學號「' + req.studentId + '」，請確認是否輸入錯誤，或舉手告知老師。',
+        message: guess
+          ? '名單上查不到「' + req.studentId + '」。你是不是要輸入 ' + guess + '？'
+          : '名單上查不到學號「' + req.studentId + '」，請確認是否輸入錯誤，或舉手告知老師。',
         studentName: '',
-        note: '不在名冊'
+        suggestion: guess,
+        note: guess ? '不在名冊（建議 ' + guess + '）' : '不在名冊'
       };
     }
     // 學號不存在時自動建立資料列，並標記為非名冊學生。
@@ -321,7 +328,7 @@ function findRow(sheet, studentId) {
   if (last < 2) return null;
   var values = sheet.getRange(2, COL.ID, last - 1, 2).getValues(); // B 學號, C 姓名
   for (var i = 0; i < values.length; i++) {
-    var id = String(values[i][0]).trim().toUpperCase();
+    var id = normalizeId(values[i][0]);
     if (id === studentId) {
       return { row: i + 2, name: String(values[i][1]).trim() };
     }
@@ -357,6 +364,82 @@ function writeLog(req, result) {
     result.note || (result.status === 'success' ? '' : result.message) || '',
     req.deviceId ? req.deviceId.slice(0, 8) : ''
   ]);
+}
+
+
+/* ======================= 學號正規化 ======================= */
+/*
+ * 學生在手機上打學號會出現各種狀況，這裡一次收乾淨：
+ *   全形字（Ｂ１４７６１０００１）、注音鍵盤的全形空白、
+ *   貼整串信箱、中間加空格或破折號、大小寫混用。
+ * 前端 index.html 有一份同樣邏輯，這裡是第二道防線（也給直接打 API 的情況用）。
+ */
+
+function normalizeId(raw) {
+  var s = String(raw == null ? '' : raw);
+
+  // 全形英數與符號 → 半形（U+FF01~U+FF5E 與 ASCII 差 0xFEE0）
+  s = s.replace(/[\uFF01-\uFF5E]/g, function(ch) {
+    return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0);
+  });
+  s = s.replace(/\u3000/g, ' ');   // 全形空白
+
+  // 有人會直接貼學校信箱，取 @ 前面那段
+  var at = s.indexOf('@');
+  if (at > 0) s = s.substring(0, at);
+
+  // 去掉空白與常見分隔符
+  s = s.replace(/[\s\-_.]/g, '');
+
+  return s.toUpperCase();
+}
+
+/*
+ * 形近字對照。兩邊都套同一張表再比對，所以 B14761OOO1（打成英文 O）
+ * 和 B147610001 會得到同一把鑰匙。只用來「提示」，不會自動改掉學號。
+ */
+var CONFUSABLE = { 'O':'0', 'Q':'0', 'I':'1', 'L':'1', 'S':'5', 'Z':'2', 'B':'8', 'G':'6' };
+
+function confusableKey(id) {
+  return String(id).toUpperCase().replace(/[OQILSZBG]/g, function(c) { return CONFUSABLE[c]; });
+}
+
+/**
+ * 查無學號時，找出唯一一個「幾乎確定是打錯」的候選。
+ * 只處理兩種情況，避免把別的同學的學號猜出來：
+ *   1. 形近字打錯（O/0、I/1、L/1…）
+ *   2. 漏打開頭的英文字母，只打了數字
+ * 找不到或有多個候選就回空字串。
+ */
+function suggestId(sheet, inputId) {
+  var last = sheet.getLastRow();
+  if (last < 2) return '';
+
+  var values = sheet.getRange(2, COL.ID, last - 1, 1).getValues();
+  var ids = [];
+  for (var i = 0; i < values.length; i++) {
+    var id = normalizeId(values[i][0]);
+    if (id) ids.push(id);
+  }
+
+  // 1. 形近字
+  var key = confusableKey(inputId);
+  var hits = [];
+  for (var j = 0; j < ids.length; j++) {
+    if (confusableKey(ids[j]) === key && ids[j] !== inputId) hits.push(ids[j]);
+  }
+  if (hits.length === 1) return hits[0];
+
+  // 2. 只打了數字，漏掉開頭字母
+  if (/^[0-9]+$/.test(inputId)) {
+    hits = [];
+    for (var k = 0; k < ids.length; k++) {
+      if (ids[k].replace(/^[A-Z]+/, '') === inputId) hits.push(ids[k]);
+    }
+    if (hits.length === 1) return hits[0];
+  }
+
+  return '';
 }
 
 
